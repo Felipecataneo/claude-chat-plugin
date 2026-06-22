@@ -1,0 +1,9 @@
+{
+  "sources": {
+    "README.md": null,
+    "docs/*.md": null
+  },
+  "max_chars_per_section": 4000,
+  "max_chars_full_file": 8000,
+  "budget_kb": 40
+}

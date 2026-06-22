@@ -1,0 +1,21 @@
+{
+  "provider": "cli",
+  "presentation_name": "Minha POC",
+  "context_file": "context.md",
+
+  "allow_file_fallback": false,
+  "fallback_files": [],
+
+  "guardrails": [
+    "Cite valores numericos exatos quando disponiveis no contexto."
+  ],
+
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 1024,
+
+  "request_timeout_s": 120,
+  "max_history_turns": 8,
+  "cors_origins": ["*"],
+  "auth_token": "",
+  "root": ".."
+}
