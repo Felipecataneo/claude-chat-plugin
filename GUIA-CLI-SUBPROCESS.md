@@ -170,7 +170,102 @@ e a allowlist ao mínimo.
 
 ---
 
-## 8. Timeout por token (resiliência)
+## 8. Isolamento de contexto (igualar a "API crua")
+
+**O problema:** o `claude` CLI, por padrão, injeta contexto que uma chamada de
+API crua (Qwen, OpenAI, Anthropic Messages API) **não teria**: o `CLAUDE.md`
+do repo via auto-discovery, `settings.json`, hooks, servidores MCP, agents,
+output styles, além de seções dinâmicas no system prompt (cwd, env, git
+status, identidade de "Claude Code"). Se você quer que o modelo receba
+**exatamente o mesmo que receberia via API crua — só o seu prompt** — precisa
+desligar tudo isso.
+
+**A solução são três camadas, todas verificadas contra o CLI v2.1.x:**
+
+```python
+args = [
+    binary,
+    "-p", "--output-format", "text",
+    "--safe-mode",                       # camada 1
+    "--tools", "",                       # camada 2
+    "--system-prompt", neutral_prompt,   # camada 3
+]
+proc = await asyncio.create_subprocess_exec(*args, ..., cwd=empty_tmp_dir)
+```
+
+### Camada 1 — `--safe-mode` (desliga customizações, MANTÉM o login do plano)
+
+Do `--help`:
+> *"Start with all customizations (CLAUDE.md, skills, plugins, hooks, MCP
+> servers, custom commands and agents, output styles, ...) disabled. **Auth,
+> model selection, built-in tools, and permissions work normally.** Sets
+> `CLAUDE_CODE_SAFE_MODE=1`."*
+
+É exatamente o que queremos: zero auto-discovery de `CLAUDE.md`/settings/hooks/
+MCP/agents, **e o login OAuth do plano continua funcionando**.
+
+> ⚠️ **Não confunda com `--bare`.** O `--bare` também desliga o auto-discovery,
+> **mas força a autenticação a ser `ANTHROPIC_API_KEY`/`apiKeyHelper` — "OAuth
+> and keychain are never read"**. Ou seja, `--bare` **quebra o login do plano**
+> e te joga de volta na cota de API paga. Para isolar mantendo o plano, é
+> `--safe-mode`, nunca `--bare`.
+>
+> ⚠️ **Ressalva:** o `--safe-mode` diz *"Admin-managed (policy) settings still
+> apply"*. Em máquina pessoal não há política gerenciada; em ambiente
+> corporativo com managed settings, essas ainda carregam.
+
+### Camada 2 — `--tools ""` (zero acesso ao filesystem)
+
+Do `--help`:
+> *"Specify the list of available tools from the built-in set. Use `""` to
+> disable all tools, `"default"` to use all tools, or specify tool names."*
+
+`--safe-mode` mantém as built-in tools "work normally", então **é o `--tools
+""` que tira o acesso ao disco**. Sem isso o modelo poderia ler arquivos do
+`cwd` (verifier.py, definições de problema, etc.). As duas flags são
+complementares, não redundantes.
+
+### Camada 3 — system prompt neutro + cwd temporário vazio
+
+- **Use `--system-prompt`, NÃO `--append-system-prompt`.** O `--append-...`
+  apenas *adiciona* ao prompt default do Claude Code (que traz identidade de
+  agente + seções dinâmicas). O `--system-prompt` **substitui** o default
+  inteiro. Bônus confirmado no `--help`: `--exclude-dynamic-system-prompt-sections`
+  é "ignored with `--system-prompt`" — ou seja, ao passar `--system-prompt`, as
+  seções de `cwd`/env/git status **já não entram**.
+- **`cwd` = diretório temporário vazio.** Defesa em profundidade: mesmo que algo
+  tente auto-discovery, não há `CLAUDE.md` nem arquivos para encontrar.
+
+```python
+import tempfile
+
+with tempfile.TemporaryDirectory() as empty:
+    proc = await asyncio.create_subprocess_exec(
+        binary, "-p", "--output-format", "text",
+        "--safe-mode", "--tools", "", "--system-prompt", "Voce e um assistente util.",
+        stdin=PIPE, stdout=PIPE, stderr=PIPE,
+        cwd=empty,
+    )
+```
+
+### Tornando isso um toggle (`CLAUDE_CLI_ISOLATED`)
+
+Vale expor como flag de config do *seu* app (não é flag do CLI), default ligado:
+
+```python
+def cli_args(binary: str, isolated: bool, system: str) -> list[str]:
+    args = [binary, "-p", "--output-format", "text"]
+    if isolated:
+        args += ["--safe-mode", "--tools", "", "--system-prompt", system]
+    return args
+```
+
+Resultado com `isolated=True`: o agente recebe **o mesmo contexto que um
+Qwen/OpenAI receberia — só o prompt** — mas faturado pelo plano via OAuth.
+
+---
+
+## 9. Timeout por token (resiliência)
 
 Para não pendurar a requisição se o CLI travar, envolva o generator num
 wrapper de timeout por chunk:
@@ -190,7 +285,7 @@ async def with_timeout(agen, timeout_s: int):
 
 ---
 
-## 9. Equivalente em Node.js (mesma técnica)
+## 10. Equivalente em Node.js (mesma técnica)
 
 ```js
 import { spawn } from "node:child_process";
@@ -212,7 +307,7 @@ processo da linguagem.
 
 ---
 
-## 10. Quando NÃO usar isto
+## 11. Quando NÃO usar isto
 
 Escolha o provider `api` (Anthropic Messages API com `ANTHROPIC_API_KEY`) quando:
 
@@ -226,7 +321,7 @@ interno numa máquina sua**, onde "custo zero" pelo plano > robustez.
 
 ---
 
-## 11. Checklist de replicação
+## 12. Checklist de replicação
 
 - [ ] `claude` instalado e `claude -p "ping"` responde sem pedir API key
 - [ ] Binário no `PATH` do processo do backend
@@ -236,5 +331,7 @@ interno numa máquina sua**, onde "custo zero" pelo plano > robustez.
 - [ ] `kill()` + `wait()` no finally; checagem de `returncode`/stderr
 - [ ] Timeout por token
 - [ ] (Opcional) `--allowedTools` + `cwd` restrito se precisar de file access
+- [ ] **Isolamento:** `--safe-mode` + `--tools ""` + `--system-prompt` + cwd temp vazio
+- [ ] Conferir que NÃO usou `--bare` (quebraria o login do plano)
 - [ ] Plano B `api` documentado para produção
 ```
